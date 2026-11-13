@@ -36,7 +36,9 @@ import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var statusView: TextView
+    private lateinit var serviceStatusView: TextView
+    private lateinit var overlayStatusView: TextView
+    private lateinit var toggleOverlayBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,27 +57,33 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
         }
 
-        statusView = TextView(this).apply {
+        serviceStatusView = TextView(this).apply {
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setPadding(0, 24, 0, 8)
+        }
+
+        overlayStatusView = TextView(this).apply {
             textSize = 16f
             gravity = Gravity.CENTER
-            setPadding(0, 20, 0, 20)
+            setPadding(0, 4, 0, 24)
         }
 
         val guide = TextView(this).apply {
             text = """
-                चलाने का तरीका:
-                1. 'Service ON / OFF करें' दबाकर OTG KeyMapper चालू करें।
-                2. 'Open Free Fire / MAX' दबाएं (गोल बटन्स सिर्फ गेम के अंदर दिखेंगे)।
-                3. गेम में गोल आइकन (🎮) दबाकर बटन्स सेट करें और 'LOCK & PLAY' दबाएं।
-                4. गेम से बाहर आते ही सारे बटन्स अपने आप छिप जाएंगे।
+                चलाने का सीधा तरीका:
+                1. पहले 'Accessibility Service ON' करें।
+                2. फिर 'KeyMapper Buttons: ON / OFF' से बटन्स चालू या बंद करें।
+                3. 'Open Free Fire' दबाएं, गोल आइकन (🎮) से बटन्स सेट करें और 'LOCK & PLAY' दबाएं।
+                4. काम खत्म होने पर यहीं से बटन्स को OFF कर दें।
             """.trimIndent()
             textSize = 14f
             setTextColor(Color.LTGRAY)
-            setPadding(0, 12, 0, 32)
+            setPadding(0, 8, 0, 32)
         }
 
         val serviceBtn = Button(this).apply {
-            text = "1. KeyMapper Service ON / OFF करें"
+            text = "1. Accessibility Service ON / OFF करें"
             setBackgroundColor(Color.parseColor("#FF5722"))
             setTextColor(Color.WHITE)
             setOnClickListener {
@@ -87,12 +95,27 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(1, 24)
         }
 
-        val openGameBtn = Button(this).apply {
-            text = "2. Open Free Fire / MAX"
-            setBackgroundColor(Color.parseColor("#00C853"))
+        toggleOverlayBtn = Button(this).apply {
             setTextColor(Color.WHITE)
             setOnClickListener {
-                launchFreeFire()
+                if (!isAccessibilityServiceEnabled()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "पहले ऊपर वाला बटन दबाकर Accessibility Service को ON करें!",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    return@setOnClickListener
+                }
+                val current = OtgKeyMapperService.isOverlayEnabled(this@MainActivity)
+                val nextState = !current
+                OtgKeyMapperService.setOverlayEnabled(this@MainActivity, nextState)
+                refreshUI()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (nextState) "KeyMapper Buttons ON हो गए!" else "KeyMapper Buttons OFF हो गए!",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
 
@@ -100,36 +123,54 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(1, 24)
         }
 
-        val hideOverlayBtn = Button(this).apply {
-            text = "3. डिस्प्ले से गोल बटन्स बंद करें (Hide)"
-            setBackgroundColor(Color.parseColor("#37474F"))
+        val openGameBtn = Button(this).apply {
+            text = "3. Open Free Fire / MAX"
+            setBackgroundColor(Color.parseColor("#2196F3"))
             setTextColor(Color.WHITE)
             setOnClickListener {
-                OtgKeyMapperService.forceHide()
-                Toast.makeText(this@MainActivity, "सारे गोल बटन्स बंद कर दिए गए हैं", Toast.LENGTH_SHORT).show()
+                launchFreeFire()
             }
         }
 
         root.addView(title)
-        root.addView(statusView)
+        root.addView(serviceStatusView)
+        root.addView(overlayStatusView)
         root.addView(guide)
         root.addView(serviceBtn)
         root.addView(spacer1)
-        root.addView(openGameBtn)
+        root.addView(toggleOverlayBtn)
         root.addView(spacer2)
-        root.addView(hideOverlayBtn)
+        root.addView(openGameBtn)
         setContentView(root)
     }
 
     override fun onResume() {
         super.onResume()
-        OtgKeyMapperService.forceHide()
-        if (isAccessibilityServiceEnabled()) {
-            statusView.text = "Status: Service ON (गेम खोलने के लिए तैयार)"
-            statusView.setTextColor(Color.parseColor("#00E676"))
+        refreshUI()
+    }
+
+    private fun refreshUI() {
+        val serviceOn = isAccessibilityServiceEnabled()
+        val overlayOn = OtgKeyMapperService.isOverlayEnabled(this)
+
+        if (serviceOn) {
+            serviceStatusView.text = "1. Accessibility Service: ON ✅"
+            serviceStatusView.setTextColor(Color.parseColor("#00E676"))
         } else {
-            statusView.text = "Status: Service OFF (पहले नीचे से ON करें)"
-            statusView.setTextColor(Color.parseColor("#FF5252"))
+            serviceStatusView.text = "1. Accessibility Service: OFF ❌"
+            serviceStatusView.setTextColor(Color.parseColor("#FF5252"))
+        }
+
+        if (serviceOn && overlayOn) {
+            overlayStatusView.text = "2. KeyMapper Buttons: ON (स्क्रीन पर चालू) 🟢"
+            overlayStatusView.setTextColor(Color.parseColor("#00E676"))
+            toggleOverlayBtn.text = "2. KeyMapper Buttons को OFF (बंद) करें"
+            toggleOverlayBtn.setBackgroundColor(Color.parseColor("#D50000"))
+        } else {
+            overlayStatusView.text = "2. KeyMapper Buttons: OFF (बंद) 🔴"
+            overlayStatusView.setTextColor(Color.parseColor("#FFAB40"))
+            toggleOverlayBtn.text = "2. KeyMapper Buttons को ON (चालू) करें"
+            toggleOverlayBtn.setBackgroundColor(Color.parseColor("#00C853"))
         }
     }
 
@@ -154,7 +195,6 @@ class MainActivity : AppCompatActivity() {
         for (pkg in packages) {
             val intent = packageManager.getLaunchIntentForPackage(pkg)
             if (intent != null) {
-                OtgKeyMapperService.forceShow()
                 startActivity(intent)
                 return
             }
@@ -168,12 +208,17 @@ class OtgKeyMapperService : AccessibilityService() {
     companion object {
         var instance: OtgKeyMapperService? = null
 
-        fun forceShow() {
-            instance?.setGameOverlayVisible(true)
+        fun isOverlayEnabled(context: Context): Boolean {
+            return context.getSharedPreferences("otg_mapper_v4", Context.MODE_PRIVATE)
+                .getBoolean("overlay_enabled", true)
         }
 
-        fun forceHide() {
-            instance?.setGameOverlayVisible(false)
+        fun setOverlayEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences("otg_mapper_v4", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("overlay_enabled", enabled)
+                .apply()
+            instance?.applyVisibilityFromPref()
         }
     }
 
@@ -182,15 +227,15 @@ class OtgKeyMapperService : AccessibilityService() {
     private lateinit var topMenuBar: LinearLayout
 
     private val handler = Handler(Looper.getMainLooper())
-    private var isOverlayVisible = false
+    private var isOverlayVisible = true
     private var isEditOpen = false
 
     private val nodes = mutableListOf<KeyNode>()
     private val nodeViews = mutableMapOf<String, TextView>()
     private val nodeParams = mutableMapOf<String, WindowManager.LayoutParams>()
 
+    private val pressedWalkKeys = mutableSetOf<Int>()
     private var currentWalkStroke: GestureDescription.StrokeDescription? = null
-    private var activeWalkKey: Int = -1
     private var walkTargetX: Float = 0f
     private var walkTargetY: Float = 0f
     private var walkRunnable: Runnable? = null
@@ -220,15 +265,17 @@ class OtgKeyMapperService : AccessibilityService() {
         setupFloatingBubble()
         setupTopMenuBar()
         renderAllNodes()
-        setGameOverlayVisible(false)
-        Toast.makeText(this, "OTG KeyMapper तैयार! अब Free Fire खोलें", Toast.LENGTH_SHORT).show()
+
+        setOverlayEnabled(this, true)
+        Toast.makeText(this, "OTG KeyMapper ON हो गया!", Toast.LENGTH_SHORT).show()
     }
 
-    fun setGameOverlayVisible(visible: Boolean) {
+    fun applyVisibilityFromPref() {
         handler.post {
-            isOverlayVisible = visible
-            if (!visible) {
+            isOverlayVisible = isOverlayEnabled(this)
+            if (!isOverlayVisible) {
                 isEditOpen = false
+                pressedWalkKeys.clear()
                 stopWalkLoop()
                 stopHoldLoop()
             }
@@ -330,28 +377,29 @@ class OtgKeyMapperService : AccessibilityService() {
                 saveAllNodes()
                 isEditOpen = false
                 applyModeState()
-                Toast.makeText(this@OtgKeyMapperService, "सेव हो गया! अब कीबोर्ड से खेलें", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@OtgKeyMapperService, "LOCK हो गया! अब कीबोर्ड से खेलें", Toast.LENGTH_SHORT).show()
             }
         }
 
-        val closeBtn = Button(this).apply {
-            text = "HIDE"
+        val offBtn = Button(this).apply {
+            text = "OFF (बंद)"
             textSize = 11f
             setBackgroundColor(Color.parseColor("#D50000"))
             setTextColor(Color.WHITE)
             setOnClickListener {
-                setGameOverlayVisible(false)
+                setOverlayEnabled(this@OtgKeyMapperService, false)
+                Toast.makeText(this@OtgKeyMapperService, "KeyMapper बंद! चालू करने के लिए ऐप खोलें", Toast.LENGTH_SHORT).show()
             }
         }
 
         topMenuBar.addView(addBtn)
         topMenuBar.addView(savePlayBtn)
-        topMenuBar.addView(closeBtn)
+        topMenuBar.addView(offBtn)
 
         val barParams = createOverlayParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            550,
+            520,
             20
         )
         windowManager.addView(topMenuBar, barParams)
@@ -381,7 +429,7 @@ class OtgKeyMapperService : AccessibilityService() {
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
             } else {
-                view.alpha = 0.25f
+                view.alpha = 0.28f
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -612,16 +660,20 @@ class OtgKeyMapperService : AccessibilityService() {
 
         if (event.repeatCount > 0) return true
 
-        val joyNode = nodes.firstOrNull { it.isJoystick }
-        if (joyNode != null) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_W -> { handleContinuousWalk(joyNode, keyCode, 0f, -145f, action); return true }
-                KeyEvent.KEYCODE_S -> { handleContinuousWalk(joyNode, keyCode, 0f, 145f, action); return true }
-                KeyEvent.KEYCODE_A -> { handleContinuousWalk(joyNode, keyCode, -145f, 0f, action); return true }
-                KeyEvent.KEYCODE_D -> { handleContinuousWalk(joyNode, keyCode, 145f, 0f, action); return true }
+        // Multi-direction Joystick WASD
+        if (keyCode == KeyEvent.KEYCODE_W || keyCode == KeyEvent.KEYCODE_A ||
+            keyCode == KeyEvent.KEYCODE_S || keyCode == KeyEvent.KEYCODE_D
+        ) {
+            if (action == KeyEvent.ACTION_DOWN) {
+                pressedWalkKeys.add(keyCode)
+            } else if (action == KeyEvent.ACTION_UP) {
+                pressedWalkKeys.remove(keyCode)
             }
+            updateWalkDirection()
+            return true
         }
 
+        // Mapped Buttons
         val matchedNode = nodes.firstOrNull { !it.isJoystick && it.keyCode == keyCode }
         if (matchedNode != null) {
             if (matchedNode.isHoldable) {
@@ -637,51 +689,79 @@ class OtgKeyMapperService : AccessibilityService() {
 
     private fun tapNode(node: KeyNode) {
         val (cx, cy) = getNodeScreenCenter(node)
+        val wasWalking = pressedWalkKeys.isNotEmpty()
+        if (wasWalking) {
+            stopWalkLoop()
+        }
+
         val path = Path().apply {
             moveTo(cx, cy)
             lineTo(cx + 2f, cy + 2f)
         }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 50)
-        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
-    }
-
-    private fun handleContinuousWalk(joy: KeyNode, keyCode: Int, dx: Float, dy: Float, action: Int) {
-        val (cx, cy) = getNodeScreenCenter(joy)
-
-        if (action == KeyEvent.ACTION_DOWN) {
-            stopWalkLoop()
-            activeWalkKey = keyCode
-            walkTargetX = cx + dx
-            walkTargetY = cy + dy
-
-            val startPath = Path().apply {
-                moveTo(cx, cy)
-                lineTo(walkTargetX, walkTargetY)
-            }
-            val firstStroke = GestureDescription.StrokeDescription(startPath, 0, 50, true)
-            currentWalkStroke = firstStroke
-            dispatchGesture(GestureDescription.Builder().addStroke(firstStroke).build(), null, null)
-
-            val loop = object : Runnable {
-                override fun run() {
-                    val prev = currentWalkStroke ?: return
-                    if (activeWalkKey != keyCode) return
-                    val holdPath = Path().apply {
-                        moveTo(walkTargetX, walkTargetY)
-                        lineTo(walkTargetX + 1f, walkTargetY + 1f)
-                    }
-                    val nextStroke = prev.continueStroke(holdPath, 0, 50, true)
-                    currentWalkStroke = nextStroke
-                    dispatchGesture(GestureDescription.Builder().addStroke(nextStroke).build(), null, null)
-                    handler.postDelayed(this, 45)
+        val stroke = GestureDescription.StrokeDescription(path, 0, 45)
+        val callback = if (wasWalking) {
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    handler.post { if (pressedWalkKeys.isNotEmpty()) updateWalkDirection() }
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    handler.post { if (pressedWalkKeys.isNotEmpty()) updateWalkDirection() }
                 }
             }
-            walkRunnable = loop
-            handler.postDelayed(loop, 45)
+        } else null
 
-        } else if (action == KeyEvent.ACTION_UP && activeWalkKey == keyCode) {
+        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), callback, null)
+    }
+
+    private fun updateWalkDirection() {
+        val joy = nodes.firstOrNull { it.isJoystick } ?: return
+        if (pressedWalkKeys.isEmpty()) {
             stopWalkLoop()
+            return
         }
+
+        var dx = 0f
+        var dy = 0f
+        if (KeyEvent.KEYCODE_W in pressedWalkKeys) dy -= 145f
+        if (KeyEvent.KEYCODE_S in pressedWalkKeys) dy += 145f
+        if (KeyEvent.KEYCODE_A in pressedWalkKeys) dx -= 145f
+        if (KeyEvent.KEYCODE_D in pressedWalkKeys) dx += 145f
+
+        if (dx == 0f && dy == 0f) {
+            stopWalkLoop()
+            return
+        }
+
+        val (cx, cy) = getNodeScreenCenter(joy)
+        walkTargetX = cx + dx
+        walkTargetY = cy + dy
+
+        if (currentWalkStroke != null) return
+
+        val startPath = Path().apply {
+            moveTo(cx, cy)
+            lineTo(walkTargetX, walkTargetY)
+        }
+        val firstStroke = GestureDescription.StrokeDescription(startPath, 0, 50, true)
+        currentWalkStroke = firstStroke
+        dispatchGesture(GestureDescription.Builder().addStroke(firstStroke).build(), null, null)
+
+        val loop = object : Runnable {
+            override fun run() {
+                val prev = currentWalkStroke ?: return
+                if (pressedWalkKeys.isEmpty()) return
+                val holdPath = Path().apply {
+                    moveTo(walkTargetX, walkTargetY)
+                    lineTo(walkTargetX + 1f, walkTargetY + 1f)
+                }
+                val nextStroke = prev.continueStroke(holdPath, 0, 50, true)
+                currentWalkStroke = nextStroke
+                dispatchGesture(GestureDescription.Builder().addStroke(nextStroke).build(), null, null)
+                handler.postDelayed(this, 45)
+            }
+        }
+        walkRunnable = loop
+        handler.postDelayed(loop, 45)
     }
 
     private fun stopWalkLoop() {
@@ -697,13 +777,13 @@ class OtgKeyMapperService : AccessibilityService() {
             dispatchGesture(GestureDescription.Builder().addStroke(endStroke).build(), null, null)
         }
         currentWalkStroke = null
-        activeWalkKey = -1
     }
 
     private fun handleContinuousHold(node: KeyNode, keyCode: Int, action: Int) {
         val (cx, cy) = getNodeScreenCenter(node)
 
         if (action == KeyEvent.ACTION_DOWN) {
+            stopWalkLoop()
             stopHoldLoop()
             activeHoldKey = keyCode
             holdTargetX = cx
@@ -736,6 +816,9 @@ class OtgKeyMapperService : AccessibilityService() {
 
         } else if (action == KeyEvent.ACTION_UP && activeHoldKey == keyCode) {
             stopHoldLoop()
+            if (pressedWalkKeys.isNotEmpty()) {
+                updateWalkDirection()
+            }
         }
     }
 
@@ -757,7 +840,7 @@ class OtgKeyMapperService : AccessibilityService() {
 
     private fun loadSavedNodes() {
         nodes.clear()
-        val prefs = getSharedPreferences("otg_mapper_v3", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("otg_mapper_v4", Context.MODE_PRIVATE)
         val raw = prefs.getString("nodes_json", null)
         if (raw != null) {
             val arr = JSONArray(raw)
@@ -809,32 +892,19 @@ class OtgKeyMapperService : AccessibilityService() {
             }
             arr.put(obj)
         }
-        getSharedPreferences("otg_mapper_v3", Context.MODE_PRIVATE)
+        getSharedPreferences("otg_mapper_v4", Context.MODE_PRIVATE)
             .edit()
             .putString("nodes_json", arr.toString())
             .apply()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString() ?: return
-            if (pkg == "com.android.systemui" || pkg.contains("inputmethod") || pkg.contains("keyboard")) {
-                return
-            }
-            val isFreeFire = (pkg == "com.dts.freefiremax" || pkg == "com.dts.freefireth")
-            if (isFreeFire && !isOverlayVisible) {
-                setGameOverlayVisible(true)
-            } else if (!isFreeFire && isOverlayVisible) {
-                setGameOverlayVisible(false)
-            }
-        }
-    }
-
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        pressedWalkKeys.clear()
         stopWalkLoop()
         stopHoldLoop()
         if (::floatingBubble.isInitialized && floatingBubble.isAttachedToWindow) {
