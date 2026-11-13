@@ -11,7 +11,10 @@ import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputFilter
 import android.text.TextUtils
@@ -55,39 +58,33 @@ class MainActivity : AppCompatActivity() {
         statusView = TextView(this).apply {
             textSize = 16f
             gravity = Gravity.CENTER
-            setPadding(0, 24, 0, 24)
+            setPadding(0, 20, 0, 20)
         }
 
         val guide = TextView(this).apply {
             text = """
-                कैसे चलाएं:
-                1. पहले नीचे 'Service ON करें' दबाकर OTG KeyMapper चालू करें।
-                2. स्क्रीन के किनारे एक गोल तैरता हुआ आइकन (🎮) आ जाएगा।
-                3. अब 'Open Free Fire' दबाएं।
-                4. गेम की सेटिंग खोलकर गोल आइकन को दबाएं, बटन्स को अपनी जगह पर खींचें और किसी भी बटन पर टच करके अपनी Key (जैसे F, Q, 1, SPACE) सेव करें।
-                5. 'LOCK & PLAY' दबाएं और कीबोर्ड से खेलें!
+                चलाने का तरीका:
+                1. 'Service ON / OFF करें' दबाकर OTG KeyMapper चालू करें।
+                2. 'Open Free Fire / MAX' दबाएं (गोल बटन्स सिर्फ गेम के अंदर दिखेंगे)।
+                3. गेम में गोल आइकन (🎮) दबाकर बटन्स सेट करें और 'LOCK & PLAY' दबाएं।
+                4. गेम से बाहर आते ही सारे बटन्स अपने आप छिप जाएंगे।
             """.trimIndent()
             textSize = 14f
             setTextColor(Color.LTGRAY)
-            setPadding(0, 12, 0, 36)
+            setPadding(0, 12, 0, 32)
         }
 
         val serviceBtn = Button(this).apply {
-            text = "1. KeyMapper Service ON करें"
+            text = "1. KeyMapper Service ON / OFF करें"
             setBackgroundColor(Color.parseColor("#FF5722"))
             setTextColor(Color.WHITE)
             setOnClickListener {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                Toast.makeText(
-                    this@MainActivity,
-                    "Downloaded/Installed Apps में जाकर OTG KeyMapper को ON करें",
-                    Toast.LENGTH_LONG
-                ).show()
             }
         }
 
-        val spacer = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(1, 28)
+        val spacer1 = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(1, 24)
         }
 
         val openGameBtn = Button(this).apply {
@@ -99,19 +96,36 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val spacer2 = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(1, 24)
+        }
+
+        val hideOverlayBtn = Button(this).apply {
+            text = "3. डिस्प्ले से गोल बटन्स बंद करें (Hide)"
+            setBackgroundColor(Color.parseColor("#37474F"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                OtgKeyMapperService.forceHide()
+                Toast.makeText(this@MainActivity, "सारे गोल बटन्स बंद कर दिए गए हैं", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         root.addView(title)
         root.addView(statusView)
         root.addView(guide)
         root.addView(serviceBtn)
-        root.addView(spacer)
+        root.addView(spacer1)
         root.addView(openGameBtn)
+        root.addView(spacer2)
+        root.addView(hideOverlayBtn)
         setContentView(root)
     }
 
     override fun onResume() {
         super.onResume()
+        OtgKeyMapperService.forceHide()
         if (isAccessibilityServiceEnabled()) {
-            statusView.text = "Status: Service ON (तैयार है)"
+            statusView.text = "Status: Service ON (गेम खोलने के लिए तैयार)"
             statusView.setTextColor(Color.parseColor("#00E676"))
         } else {
             statusView.text = "Status: Service OFF (पहले नीचे से ON करें)"
@@ -140,31 +154,63 @@ class MainActivity : AppCompatActivity() {
         for (pkg in packages) {
             val intent = packageManager.getLaunchIntentForPackage(pkg)
             if (intent != null) {
+                OtgKeyMapperService.forceShow()
                 startActivity(intent)
                 return
             }
         }
-        Toast.makeText(this, "फोन में Free Fire या Free Fire MAX इंस्टॉल नहीं मिला!", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "फोन में Free Fire या Free Fire MAX नहीं मिला!", Toast.LENGTH_LONG).show()
     }
 }
 
 class OtgKeyMapperService : AccessibilityService() {
 
+    companion object {
+        var instance: OtgKeyMapperService? = null
+
+        fun forceShow() {
+            instance?.setGameOverlayVisible(true)
+        }
+
+        fun forceHide() {
+            instance?.setGameOverlayVisible(false)
+        }
+    }
+
     private lateinit var windowManager: WindowManager
     private lateinit var floatingBubble: TextView
     private lateinit var topMenuBar: LinearLayout
 
+    private val handler = Handler(Looper.getMainLooper())
+    private var isOverlayVisible = false
     private var isEditOpen = false
+
     private val nodes = mutableListOf<KeyNode>()
     private val nodeViews = mutableMapOf<String, TextView>()
     private val nodeParams = mutableMapOf<String, WindowManager.LayoutParams>()
 
-    private var activeWalkStroke: GestureDescription.StrokeDescription? = null
-    private var activeHoldStroke: GestureDescription.StrokeDescription? = null
-    private var activeHoldKeyCode: Int = -1
+    private var currentWalkStroke: GestureDescription.StrokeDescription? = null
+    private var activeWalkKey: Int = -1
+    private var walkTargetX: Float = 0f
+    private var walkTargetY: Float = 0f
+    private var walkRunnable: Runnable? = null
+
+    private var currentHoldStroke: GestureDescription.StrokeDescription? = null
+    private var activeHoldKey: Int = -1
+    private var holdTargetX: Float = 0f
+    private var holdTargetY: Float = 0f
+    private var holdRunnable: Runnable? = null
+
+    private val resetBubbleRunnable = Runnable {
+        if (::floatingBubble.isInitialized) {
+            floatingBubble.text = "🎮"
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
+
         val info = serviceInfo
         info.flags = info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         serviceInfo = info
@@ -174,14 +220,44 @@ class OtgKeyMapperService : AccessibilityService() {
         setupFloatingBubble()
         setupTopMenuBar()
         renderAllNodes()
-        applyModeState()
-        Toast.makeText(this, "OTG KeyMapper चालू! किनारे गोल आइकन दबाएं", Toast.LENGTH_SHORT).show()
+        setGameOverlayVisible(false)
+        Toast.makeText(this, "OTG KeyMapper तैयार! अब Free Fire खोलें", Toast.LENGTH_SHORT).show()
+    }
+
+    fun setGameOverlayVisible(visible: Boolean) {
+        handler.post {
+            isOverlayVisible = visible
+            if (!visible) {
+                isEditOpen = false
+                stopWalkLoop()
+                stopHoldLoop()
+            }
+            applyModeState()
+        }
+    }
+
+    private fun createOverlayParams(width: Int, height: Int, startX: Int, startY: Int): WindowManager.LayoutParams {
+        return WindowManager.LayoutParams(
+            width,
+            height,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = startX
+            y = startY
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
     }
 
     private fun setupFloatingBubble() {
         floatingBubble = TextView(this).apply {
             text = "🎮"
-            textSize = 20f
+            textSize = 16f
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
@@ -190,19 +266,7 @@ class OtgKeyMapperService : AccessibilityService() {
             }
         }
 
-        val bubbleSize = 115
-        val params = WindowManager.LayoutParams(
-            bubbleSize,
-            bubbleSize,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 24
-            y = 180
-        }
-
+        val params = createOverlayParams(115, 115, 24, 180)
         var initX = 0
         var initY = 0
         var touchX = 0f
@@ -254,9 +318,7 @@ class OtgKeyMapperService : AccessibilityService() {
             textSize = 11f
             setBackgroundColor(Color.parseColor("#2196F3"))
             setTextColor(Color.WHITE)
-            setOnClickListener {
-                addNewCustomNode()
-            }
+            setOnClickListener { addNewCustomNode() }
         }
 
         val savePlayBtn = Button(this).apply {
@@ -272,37 +334,57 @@ class OtgKeyMapperService : AccessibilityService() {
             }
         }
 
-        topMenuBar.addView(addBtn)
-        topMenuBar.addView(savePlayBtn)
-
-        val barParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 20
+        val closeBtn = Button(this).apply {
+            text = "HIDE"
+            textSize = 11f
+            setBackgroundColor(Color.parseColor("#D50000"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                setGameOverlayVisible(false)
+            }
         }
 
+        topMenuBar.addView(addBtn)
+        topMenuBar.addView(savePlayBtn)
+        topMenuBar.addView(closeBtn)
+
+        val barParams = createOverlayParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            550,
+            20
+        )
         windowManager.addView(topMenuBar, barParams)
     }
 
     private fun applyModeState() {
+        if (!::floatingBubble.isInitialized || !::topMenuBar.isInitialized) return
+
+        if (!isOverlayVisible) {
+            floatingBubble.visibility = View.GONE
+            topMenuBar.visibility = View.GONE
+            for (node in nodes) {
+                nodeViews[node.id]?.visibility = View.GONE
+            }
+            return
+        }
+
+        floatingBubble.visibility = View.VISIBLE
         topMenuBar.visibility = if (isEditOpen) View.VISIBLE else View.GONE
+
         for (node in nodes) {
             val view = nodeViews[node.id] ?: continue
             val params = nodeParams[node.id] ?: continue
+            view.visibility = View.VISIBLE
             if (isEditOpen) {
-                view.visibility = View.VISIBLE
                 view.alpha = 1.0f
-                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            } else {
-                view.visibility = View.VISIBLE
-                view.alpha = 0.22f
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            } else {
+                view.alpha = 0.25f
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
             }
             windowManager.updateViewLayout(view, params)
         }
@@ -327,19 +409,7 @@ class OtgKeyMapperService : AccessibilityService() {
             }
         }
 
-        val sizePx = 115
-        val params = WindowManager.LayoutParams(
-            sizePx,
-            sizePx,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = node.x
-            y = node.y
-        }
-
+        val params = createOverlayParams(115, 115, node.x, node.y)
         var initX = 0
         var initY = 0
         var touchX = 0f
@@ -511,29 +581,51 @@ class OtgKeyMapperService : AccessibilityService() {
         }
     }
 
+    private fun showKeyFeedback(keyCode: Int) {
+        val label = getReadableKeyName(keyCode)
+        if (label.isNotEmpty() && ::floatingBubble.isInitialized) {
+            floatingBubble.text = label
+            handler.removeCallbacks(resetBubbleRunnable)
+            handler.postDelayed(resetBubbleRunnable, 600)
+        }
+    }
+
+    private fun getNodeScreenCenter(node: KeyNode): Pair<Float, Float> {
+        val view = nodeViews[node.id]
+        if (view != null && view.isAttachedToWindow && view.width > 0) {
+            val loc = IntArray(2)
+            view.getLocationOnScreen(loc)
+            return Pair(loc[0] + view.width / 2f, loc[1] + view.height / 2f)
+        }
+        return Pair(node.x + 57f, node.y + 57f)
+    }
+
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        if (isEditOpen) return super.onKeyEvent(event)
-        if (event.repeatCount > 0) return true
+        if (!isOverlayVisible || isEditOpen) return super.onKeyEvent(event)
 
         val keyCode = event.keyCode
         val action = event.action
 
-        // Joystick WASD
+        if (action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            showKeyFeedback(keyCode)
+        }
+
+        if (event.repeatCount > 0) return true
+
         val joyNode = nodes.firstOrNull { it.isJoystick }
         if (joyNode != null) {
             when (keyCode) {
-                KeyEvent.KEYCODE_W -> { handleWalk(joyNode, 0f, -135f, action); return true }
-                KeyEvent.KEYCODE_S -> { handleWalk(joyNode, 0f, 135f, action); return true }
-                KeyEvent.KEYCODE_A -> { handleWalk(joyNode, -135f, 0f, action); return true }
-                KeyEvent.KEYCODE_D -> { handleWalk(joyNode, 135f, 0f, action); return true }
+                KeyEvent.KEYCODE_W -> { handleContinuousWalk(joyNode, keyCode, 0f, -145f, action); return true }
+                KeyEvent.KEYCODE_S -> { handleContinuousWalk(joyNode, keyCode, 0f, 145f, action); return true }
+                KeyEvent.KEYCODE_A -> { handleContinuousWalk(joyNode, keyCode, -145f, 0f, action); return true }
+                KeyEvent.KEYCODE_D -> { handleContinuousWalk(joyNode, keyCode, 145f, 0f, action); return true }
             }
         }
 
-        // Custom & Standard Mapped Keys
         val matchedNode = nodes.firstOrNull { !it.isJoystick && it.keyCode == keyCode }
         if (matchedNode != null) {
             if (matchedNode.isHoldable) {
-                handleHoldNode(matchedNode, action)
+                handleContinuousHold(matchedNode, keyCode, action)
             } else if (action == KeyEvent.ACTION_DOWN) {
                 tapNode(matchedNode)
             }
@@ -544,58 +636,128 @@ class OtgKeyMapperService : AccessibilityService() {
     }
 
     private fun tapNode(node: KeyNode) {
-        val cx = node.x + 57f
-        val cy = node.y + 57f
-        val path = Path().apply { moveTo(cx, cy) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 45)
+        val (cx, cy) = getNodeScreenCenter(node)
+        val path = Path().apply {
+            moveTo(cx, cy)
+            lineTo(cx + 2f, cy + 2f)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 50)
         dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
     }
 
-    private fun handleHoldNode(node: KeyNode, action: Int) {
-        val cx = node.x + 57f
-        val cy = node.y + 57f
+    private fun handleContinuousWalk(joy: KeyNode, keyCode: Int, dx: Float, dy: Float, action: Int) {
+        val (cx, cy) = getNodeScreenCenter(joy)
+
         if (action == KeyEvent.ACTION_DOWN) {
-            val path = Path().apply { moveTo(cx, cy) }
-            val stroke = GestureDescription.StrokeDescription(path, 0, 50, true)
-            activeHoldStroke = stroke
-            activeHoldKeyCode = node.keyCode
-            dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
-        } else if (action == KeyEvent.ACTION_UP && activeHoldKeyCode == node.keyCode) {
-            val prev = activeHoldStroke ?: return
-            val endPath = Path().apply { moveTo(cx, cy) }
-            val endStroke = prev.continueStroke(endPath, 0, 20, false)
-            activeHoldStroke = null
-            activeHoldKeyCode = -1
-            dispatchGesture(GestureDescription.Builder().addStroke(endStroke).build(), null, null)
+            stopWalkLoop()
+            activeWalkKey = keyCode
+            walkTargetX = cx + dx
+            walkTargetY = cy + dy
+
+            val startPath = Path().apply {
+                moveTo(cx, cy)
+                lineTo(walkTargetX, walkTargetY)
+            }
+            val firstStroke = GestureDescription.StrokeDescription(startPath, 0, 50, true)
+            currentWalkStroke = firstStroke
+            dispatchGesture(GestureDescription.Builder().addStroke(firstStroke).build(), null, null)
+
+            val loop = object : Runnable {
+                override fun run() {
+                    val prev = currentWalkStroke ?: return
+                    if (activeWalkKey != keyCode) return
+                    val holdPath = Path().apply {
+                        moveTo(walkTargetX, walkTargetY)
+                        lineTo(walkTargetX + 1f, walkTargetY + 1f)
+                    }
+                    val nextStroke = prev.continueStroke(holdPath, 0, 50, true)
+                    currentWalkStroke = nextStroke
+                    dispatchGesture(GestureDescription.Builder().addStroke(nextStroke).build(), null, null)
+                    handler.postDelayed(this, 45)
+                }
+            }
+            walkRunnable = loop
+            handler.postDelayed(loop, 45)
+
+        } else if (action == KeyEvent.ACTION_UP && activeWalkKey == keyCode) {
+            stopWalkLoop()
         }
     }
 
-    private fun handleWalk(joy: KeyNode, dx: Float, dy: Float, action: Int) {
-        val cx = joy.x + 57f
-        val cy = joy.y + 57f
-        if (action == KeyEvent.ACTION_DOWN) {
-            val path = Path().apply {
-                moveTo(cx, cy)
-                lineTo(cx + dx, cy + dy)
-            }
-            val stroke = GestureDescription.StrokeDescription(path, 0, 60, true)
-            activeWalkStroke = stroke
-            dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
-        } else if (action == KeyEvent.ACTION_UP) {
-            val prev = activeWalkStroke ?: return
+    private fun stopWalkLoop() {
+        walkRunnable?.let { handler.removeCallbacks(it) }
+        walkRunnable = null
+        val prev = currentWalkStroke
+        if (prev != null) {
             val endPath = Path().apply {
-                moveTo(cx + dx, cy + dy)
-                lineTo(cx, cy)
+                moveTo(walkTargetX, walkTargetY)
+                lineTo(walkTargetX + 1f, walkTargetY + 1f)
             }
-            val endStroke = prev.continueStroke(endPath, 0, 30, false)
-            activeWalkStroke = null
+            val endStroke = prev.continueStroke(endPath, 0, 20, false)
             dispatchGesture(GestureDescription.Builder().addStroke(endStroke).build(), null, null)
         }
+        currentWalkStroke = null
+        activeWalkKey = -1
+    }
+
+    private fun handleContinuousHold(node: KeyNode, keyCode: Int, action: Int) {
+        val (cx, cy) = getNodeScreenCenter(node)
+
+        if (action == KeyEvent.ACTION_DOWN) {
+            stopHoldLoop()
+            activeHoldKey = keyCode
+            holdTargetX = cx
+            holdTargetY = cy
+
+            val startPath = Path().apply {
+                moveTo(cx, cy)
+                lineTo(cx + 1f, cy + 1f)
+            }
+            val firstStroke = GestureDescription.StrokeDescription(startPath, 0, 50, true)
+            currentHoldStroke = firstStroke
+            dispatchGesture(GestureDescription.Builder().addStroke(firstStroke).build(), null, null)
+
+            val loop = object : Runnable {
+                override fun run() {
+                    val prev = currentHoldStroke ?: return
+                    if (activeHoldKey != keyCode) return
+                    val holdPath = Path().apply {
+                        moveTo(holdTargetX, holdTargetY)
+                        lineTo(holdTargetX + 1f, holdTargetY + 1f)
+                    }
+                    val nextStroke = prev.continueStroke(holdPath, 0, 50, true)
+                    currentHoldStroke = nextStroke
+                    dispatchGesture(GestureDescription.Builder().addStroke(nextStroke).build(), null, null)
+                    handler.postDelayed(this, 45)
+                }
+            }
+            holdRunnable = loop
+            handler.postDelayed(loop, 45)
+
+        } else if (action == KeyEvent.ACTION_UP && activeHoldKey == keyCode) {
+            stopHoldLoop()
+        }
+    }
+
+    private fun stopHoldLoop() {
+        holdRunnable?.let { handler.removeCallbacks(it) }
+        holdRunnable = null
+        val prev = currentHoldStroke
+        if (prev != null) {
+            val endPath = Path().apply {
+                moveTo(holdTargetX, holdTargetY)
+                lineTo(holdTargetX + 1f, holdTargetY + 1f)
+            }
+            val endStroke = prev.continueStroke(endPath, 0, 20, false)
+            dispatchGesture(GestureDescription.Builder().addStroke(endStroke).build(), null, null)
+        }
+        currentHoldStroke = null
+        activeHoldKey = -1
     }
 
     private fun loadSavedNodes() {
         nodes.clear()
-        val prefs = getSharedPreferences("otg_mapper_v2", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("otg_mapper_v3", Context.MODE_PRIVATE)
         val raw = prefs.getString("nodes_json", null)
         if (raw != null) {
             val arr = JSONArray(raw)
@@ -647,17 +809,34 @@ class OtgKeyMapperService : AccessibilityService() {
             }
             arr.put(obj)
         }
-        getSharedPreferences("otg_mapper_v2", Context.MODE_PRIVATE)
+        getSharedPreferences("otg_mapper_v3", Context.MODE_PRIVATE)
             .edit()
             .putString("nodes_json", arr.toString())
             .apply()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val pkg = event.packageName?.toString() ?: return
+            if (pkg == "com.android.systemui" || pkg.contains("inputmethod") || pkg.contains("keyboard")) {
+                return
+            }
+            val isFreeFire = (pkg == "com.dts.freefiremax" || pkg == "com.dts.freefireth")
+            if (isFreeFire && !isOverlayVisible) {
+                setGameOverlayVisible(true)
+            } else if (!isFreeFire && isOverlayVisible) {
+                setGameOverlayVisible(false)
+            }
+        }
+    }
+
     override fun onInterrupt() {}
 
     override fun onDestroy() {
         super.onDestroy()
+        instance = null
+        stopWalkLoop()
+        stopHoldLoop()
         if (::floatingBubble.isInitialized && floatingBubble.isAttachedToWindow) {
             windowManager.removeView(floatingBubble)
         }
